@@ -47,6 +47,14 @@ var object_count_flag bool
 var endtime time.Time
 var interval float64
 
+// Consistency verification flags and state
+var verify bool
+var keyMapPath string
+var journalPath string
+var verifyInline bool
+var globalKeyMap *KeyMap
+var globalJournal *Journal
+
 // Our HTTP transport used for the roundtripper below
 var HTTPTransport http.RoundTripper = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
@@ -483,7 +491,31 @@ func runUpload(thread_num int, fendtime time.Time, stats *Stats) {
 			objnum = atomic.AddInt64(&op_counter, -1)
 			break
 		}
-		fileobj := bytes.NewReader(object_data)
+
+		var fileobj *bytes.Reader
+		var uploadKey uint8  // the new key being written
+		var oldKey uint8     // previous key (for rollback)
+		var useVerify bool   // whether verify path is active for this object
+
+		if verify && globalKeyMap != nil {
+			var ok bool
+			oldKey, ok = globalKeyMap.acquireBusy(objnum)
+			if !ok {
+				// object is busy or dvError — skip this objnum
+				atomic.AddInt64(&op_counter, -1)
+				continue
+			}
+			uploadKey = NextKey(oldKey)
+			if globalJournal != nil {
+				if err := globalJournal.WriteBefore(objnum, oldKey, uploadKey); err != nil {
+					log.Printf("journal WriteBefore err: %v", err)
+				}
+			}
+			fileobj = bytes.NewReader(generateObjectData(objnum, uploadKey, int(object_size)))
+			useVerify = true
+		} else {
+			fileobj = bytes.NewReader(object_data)
+		}
 
 		key := fmt.Sprintf("%s%012d", object_prefix, objnum)
 		r := &s3.PutObjectInput{
@@ -507,9 +539,43 @@ func runUpload(thread_num int, fendtime time.Time, stats *Stats) {
 			stats.addSlowDown(thread_num)
 			atomic.AddInt64(&op_counter, -1)
 			log.Printf("upload err: %v", err)
+			if useVerify {
+				globalKeyMap.releaseBusy(objnum, oldKey) // rollback
+			}
 		} else {
 			// Update the stats
 			stats.addOp(thread_num, object_size, end-start)
+			if useVerify {
+				if globalJournal != nil {
+					if err := globalJournal.WriteAfter(objnum, oldKey, uploadKey); err != nil {
+						log.Printf("journal WriteAfter err: %v", err)
+					}
+				}
+				if verifyInline {
+					// GET and compare inline
+					getR := &s3.GetObjectInput{
+						Bucket: &buckets[bucket_num],
+						Key:    &key,
+					}
+					greq, gresp := svc.GetObjectRequest(getR)
+					gerr := greq.Send()
+					if gerr != nil {
+						log.Printf("inline verify GET err objnum=%d: %v", objnum, gerr)
+						globalKeyMap.releaseBusy(objnum, dvError)
+					} else {
+						data, rerr := readBodyFull(gresp.Body)
+						gresp.Body.Close()
+						if rerr != nil || !verifyObjectData(objnum, uploadKey, data) {
+							log.Printf("%s", buildVerifyReport(objnum, buckets[bucket_num], uploadKey, data))
+							globalKeyMap.releaseBusy(objnum, dvError)
+						} else {
+							globalKeyMap.releaseBusy(objnum, uploadKey)
+						}
+					}
+				} else {
+					globalKeyMap.releaseBusy(objnum, uploadKey)
+				}
+			}
 		}
 		if errcnt > 2 {
 			break
@@ -535,6 +601,33 @@ func readBody(r io.Reader) (int64, error) {
 			}
 		}
 	}
+}
+
+// readBodyFull reads all bytes from r into a byte slice and returns them.
+func readBodyFull(r io.Reader) ([]byte, error) {
+	buf := make([]byte, 0, 65536)
+	tmp := make([]byte, 65536)
+	for {
+		n, err := r.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if err == io.EOF {
+				return buf, nil
+			}
+			return buf, err
+		}
+	}
+}
+
+// isValidMode reports whether r is a valid mode character.
+func isValidMode(r rune) bool {
+	switch r {
+	case 'i', 'c', 'p', 'g', 'l', 'd', 'x', 'v':
+		return true
+	}
+	return false
 }
 
 func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
@@ -574,15 +667,39 @@ func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
 			stats.addSlowDown(thread_num)
 			log.Printf("download err: %v", err)
 		} else {
-			var bytesRead int64 = 0
-			bytesRead, err := readBody(resp.Body)
-			resp.Body.Close()
-			// Update the stats
-			stats.addOp(thread_num, bytesRead, end-start)
-			if err != nil {
-				errcnt++
-				stats.addSlowDown(thread_num)
-				log.Printf("download err: %v", err)
+			if verify && globalKeyMap != nil {
+				// Read full body for comparison
+				data, rerr := readBodyFull(resp.Body)
+				resp.Body.Close()
+				bytesRead := int64(len(data))
+				stats.addOp(thread_num, bytesRead, end-start)
+				if rerr != nil {
+					errcnt++
+					stats.addSlowDown(thread_num)
+					log.Printf("download err: %v", rerr)
+				} else {
+					// Classify the stored key for this object
+					storedByte := globalKeyMap.data[objnum]
+					class := classifyKeyByte(storedByte)
+					if class == "written" {
+						storedKey := storedByte & 0x7F
+						if !verifyObjectData(objnum, storedKey, data) {
+							log.Printf("%s", buildVerifyReport(objnum, buckets[bucket_num], storedKey, data))
+						}
+					}
+					// busy/unwritten/dv_error: skip verification
+				}
+			} else {
+				var bytesRead int64 = 0
+				bytesRead, err = readBody(resp.Body)
+				resp.Body.Close()
+				// Update the stats
+				stats.addOp(thread_num, bytesRead, end-start)
+				if err != nil {
+					errcnt++
+					stats.addSlowDown(thread_num)
+					log.Printf("download err: %v", err)
+				}
 			}
 		}
 		if errcnt > 2 {
@@ -846,6 +963,13 @@ func runWrapper(loop int, r rune) []OutputStats {
 		for n := 0; n < threads; n++ {
 			go runDelete(n, &stats)
 		}
+	case 'v':
+		log.Printf("Running Loop %d OBJECT VERIFY TEST", loop)
+		stats = makeStats(loop, "VER", threads, intervalNano)
+		for n := 0; n < threads; n++ {
+			svc := getS3Client()
+			go runVerify(n, svc, &stats)
+		}
 	}
 
 	// Wait for it to finish
@@ -904,6 +1028,10 @@ func init() {
 	myflag.StringVar(&sizeArg, "z", "1M", "Size of objects in bytes with postfix K, M, and G")
 	myflag.BoolVar(&zero_object_data, "zd", false, "Write zero values for objects data in PUT operations instead of random data")
 	myflag.Float64Var(&interval, "ri", 1.0, "Number of seconds between report intervals")
+	myflag.BoolVar(&verify, "verify", false, "Enable consistency verification (requires -km)")
+	myflag.StringVar(&keyMapPath, "km", "", "Path to key map file for consistency verification")
+	myflag.StringVar(&journalPath, "journal", "", "Path to journal file for crash recovery")
+	myflag.BoolVar(&verifyInline, "verify-inline", false, "After each PUT, immediately GET and verify the object")
 	// define custom usage output with notes
 	notes :=
 		`
@@ -953,13 +1081,7 @@ NOTES:
 	}
 	invalid_mode := false
 	for _, r := range modes {
-		if r != 'i' &&
-			r != 'c' &&
-			r != 'p' &&
-			r != 'g' &&
-			r != 'l' &&
-			r != 'd' &&
-			r != 'x' {
+		if !isValidMode(r) {
 			s := fmt.Sprintf("Invalid mode '%s' passed to -m", string(r))
 			log.Printf(s)
 			invalid_mode = true
@@ -1029,6 +1151,33 @@ func main() {
 
 	// Init Data
 	initData()
+
+	// Load key map and recover if needed (Group 8)
+	if verify && keyMapPath != "" {
+		km, err := NewKeyMap(keyMapPath, object_count)
+		if err != nil {
+			log.Fatalf("Failed to load key map: %v", err)
+		}
+		globalKeyMap = km
+		if km.HasBusy() {
+			RecoverBusy(km, journalPath)
+		}
+	}
+	if verify && journalPath != "" {
+		jnl, err := NewJournal(journalPath)
+		if err != nil {
+			log.Fatalf("Failed to open journal: %v", err)
+		}
+		globalJournal = jnl
+		defer func() {
+			jnl.Close()
+			if globalKeyMap != nil {
+				if err := globalKeyMap.Sync(); err != nil {
+					log.Printf("WARNING: key map sync failed: %v", err)
+				}
+			}
+		}()
+	}
 
 	// Setup the slice of buckets
 	if bucket_list == "" {
