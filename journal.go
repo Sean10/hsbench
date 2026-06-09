@@ -84,9 +84,14 @@ func (j *Journal) write(objnum int64, oldKey, newKey, phase uint8) error {
 	buf[10] = phase
 	// buf[11:24] stays zero (padding)
 
-	_, err := j.file.Write(buf[:])
-	if err != nil {
-		return fmt.Errorf("failed to write journal record: %w", err)
+	// Each write is followed by fsync for crash durability.
+	// This adds per-write latency; if throughput matters more than safety,
+	// batching writes before syncing can be considered.
+	if _, err := j.file.Write(buf[:]); err != nil {
+		return fmt.Errorf("journal: write record: %w", err)
+	}
+	if err := j.file.Sync(); err != nil {
+		return fmt.Errorf("journal: sync: %w", err)
 	}
 	return nil
 }

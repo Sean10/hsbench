@@ -513,8 +513,8 @@ func runUpload(thread_num int, fendtime time.Time, stats *Stats) {
 			var ok bool
 			oldKey, ok = globalKeyMap.acquireBusy(objnum)
 			if !ok {
-				// object is busy or dvError — skip this objnum
-				atomic.AddInt64(&op_counter, -1)
+				// Skip DV_ERROR or concurrently-busy objects; do not decrement op_counter
+				// as that could cause infinite spin when all remaining objects are DV_ERROR.
 				continue
 			}
 			uploadKey = NextKey(oldKey)
@@ -1123,6 +1123,17 @@ NOTES:
 	}
 	if invalid_mode {
 		log.Fatal("Invalid modes passed to -m, see help for details.")
+	}
+	if verify {
+		if keyMapPath == "" {
+			log.Fatal("-verify requires -km <path> to be specified")
+		}
+		if object_count < 0 {
+			log.Fatal("-verify requires -n <count> to be set (cannot be unlimited with -verify)")
+		}
+	}
+	if verifyInline && !verify {
+		log.Fatal("-verify-inline requires -verify")
 	}
 	var err error
 	var size uint64

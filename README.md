@@ -199,7 +199,7 @@ hsbench includes a consistency verification mode for fault-injection testing. Wh
 |------|-------------|
 | `-verify` | Enable consistency verification mode. PUT writes deterministic data; GET validates retrieved data against regenerated expected content. |
 | `-km <path>` | Path to key_map file for persisting write version tracking across runs. Each byte encodes one object: `0` = unwritten, `1–126` = write version, `127` = DV_ERROR (corruption detected), `0x80–0xFF` = write-in-progress (busy, pending journal recovery). |
-| `-journal <path>` | Path to journal file for crash recovery. Records before/after entries around each write. On restart, any objects marked busy in the key_map are resolved by replaying the journal to restore a consistent state. |
+| `-journal <path>` | Path to journal file for crash recovery. Records before/after entries around each write. On restart, any objects marked busy in the key_map are resolved by replaying the journal to restore a consistent state. **Note:** each journal write calls `fsync` for crash durability, which adds latency per PUT. |
 | `-verify-inline` | After each successful PUT, immediately GET and verify the object. On mismatch, marks the object as DV_ERROR (`127`) in the key_map. |
 
 ### New Mode
