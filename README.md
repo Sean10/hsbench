@@ -188,3 +188,50 @@ One notable point is that like the s3-benchmark program it is based on, hsbench 
 23329 root      20   0 1658700 253068  21320 S 333.3  0.4 530:06.76 radosgw
  9017 perf      20   0 2184580  33612   6568 S 173.3  0.1   0:05.25 hsbench
 ```
+
+## Data Consistency Verification
+
+hsbench includes a consistency verification mode for fault-injection testing. When enabled, PUT uses deterministic data generation (XorShift64 keyed by object number and a per-object write version) instead of random data. GET compares retrieved data against regenerated expected data, making it possible to detect silent corruption, partial writes, and stale reads after cluster faults.
+
+### New Flags
+
+| Flag | Description |
+|------|-------------|
+| `-verify` | Enable consistency verification mode. PUT writes deterministic data; GET validates retrieved data against regenerated expected content. |
+| `-km <path>` | Path to key_map file for persisting write version tracking across runs. Each byte encodes one object: `0` = unwritten, `1–126` = write version, `127` = DV_ERROR (corruption detected), `0x80–0xFF` = write-in-progress (busy, pending journal recovery). |
+| `-journal <path>` | Path to journal file for crash recovery. Records before/after entries around each write. On restart, any objects marked busy in the key_map are resolved by replaying the journal to restore a consistent state. |
+| `-verify-inline` | After each successful PUT, immediately GET and verify the object. On mismatch, marks the object as DV_ERROR (`127`) in the key_map. |
+
+### New Mode
+
+| Mode | Description |
+|------|-------------|
+| `v` | Verify-only. Scans the key_map and GETs every known object, comparing against regenerated expected data. Reports counts for: total / verified / pass / fail / unknown / unwritten / dv_error. Use this mode after fault injection and recovery to assess data integrity without writing new data. |
+
+### Typical Workflow
+
+```bash
+# Phase 1: Write objects with deterministic data and version tracking
+hsbench -a ACCESS -s SECRET -u http://rgw:7480 \
+  -b 1 -n 10000 -z 1M -t 16 \
+  -verify -km /tmp/test.km -journal /tmp/test.jnl \
+  -m "cxipg"
+
+# Phase 2: Inject a fault (OSD crash, network partition, power loss, etc.)
+# ... wait for recovery and cluster to return to health ...
+
+# Phase 3: Verify data integrity — no writes, reads only
+hsbench -a ACCESS -s SECRET -u http://rgw:7480 \
+  -b 1 -n 10000 -z 1M -t 16 \
+  -verify -km /tmp/test.km \
+  -m "v"
+```
+
+The `v` mode output includes a per-interval summary line with the following counters:
+
+- **Verified** — objects successfully GET-ted and checked
+- **Pass** — objects whose content matched the expected data
+- **Fail** — objects whose content did not match (data corruption detected)
+- **Unknown** — objects that could not be read (e.g. 404, network error)
+- **Unwritten** — objects not yet written according to the key_map
+- **DV_ERROR** — objects previously flagged as corrupted by `-verify-inline`
