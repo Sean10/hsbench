@@ -55,6 +55,13 @@ var verifyInline bool
 var globalKeyMap *KeyMap
 var globalJournal *Journal
 
+// Atomic counters for 'v' mode, reset before each runWrapper call
+var verifyTotal   int64
+var verifyPass    int64
+var verifyFail    int64
+var verifyUnknown int64
+var verifyDVError int64
+
 // Our HTTP transport used for the roundtripper below
 var HTTPTransport http.RoundTripper = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
@@ -966,6 +973,12 @@ func runWrapper(loop int, r rune) []OutputStats {
 	case 'v':
 		log.Printf("Running Loop %d OBJECT VERIFY TEST", loop)
 		stats = makeStats(loop, "VER", threads, intervalNano)
+		// Reset per-run verify counters
+		atomic.StoreInt64(&verifyTotal, 0)
+		atomic.StoreInt64(&verifyPass, 0)
+		atomic.StoreInt64(&verifyFail, 0)
+		atomic.StoreInt64(&verifyUnknown, 0)
+		atomic.StoreInt64(&verifyDVError, 0)
 		for n := 0; n < threads; n++ {
 			svc := getS3Client()
 			go runVerify(n, svc, &stats)
@@ -975,6 +988,18 @@ func runWrapper(loop int, r rune) []OutputStats {
 	// Wait for it to finish
 	for atomic.LoadInt64(&running_threads) > 0 {
 		time.Sleep(time.Millisecond)
+	}
+
+	// Print verify summary once after all threads complete
+	if r == 'v' {
+		log.Printf("%s", buildVerifySummary(
+			atomic.LoadInt64(&verifyTotal),
+			atomic.LoadInt64(&verifyPass)+atomic.LoadInt64(&verifyFail),
+			atomic.LoadInt64(&verifyPass),
+			atomic.LoadInt64(&verifyFail),
+			atomic.LoadInt64(&verifyUnknown),
+			atomic.LoadInt64(&verifyDVError),
+		))
 	}
 
 	// If the user didn't set the object_count, we can set it here
@@ -1156,27 +1181,25 @@ func main() {
 	if verify && keyMapPath != "" {
 		km, err := NewKeyMap(keyMapPath, object_count)
 		if err != nil {
-			log.Fatalf("Failed to load key map: %v", err)
+			log.Fatalf("FATAL: Failed to load key map: %v", err)
 		}
 		globalKeyMap = km
 		if km.HasBusy() {
 			RecoverBusy(km, journalPath)
 		}
+		defer func() {
+			if err := globalKeyMap.Sync(); err != nil {
+				log.Printf("WARNING: key map sync failed: %v", err)
+			}
+		}()
 	}
 	if verify && journalPath != "" {
 		jnl, err := NewJournal(journalPath)
 		if err != nil {
-			log.Fatalf("Failed to open journal: %v", err)
+			log.Fatalf("FATAL: Failed to open journal: %v", err)
 		}
 		globalJournal = jnl
-		defer func() {
-			jnl.Close()
-			if globalKeyMap != nil {
-				if err := globalKeyMap.Sync(); err != nil {
-					log.Printf("WARNING: key map sync failed: %v", err)
-				}
-			}
-		}()
+		defer globalJournal.Close()
 	}
 
 	// Setup the slice of buckets

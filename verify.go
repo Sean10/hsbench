@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -50,35 +51,43 @@ func buildVerifySummary(total, verified, pass, fail, unknown, dvErrorCount int64
 		total, verified, pass, fail, unknown, dvErrorCount)
 }
 
-// runVerify 遍历 globalKeyMap，对每个已写入对象执行 GET 并与 generateObjectData 比对。
-// 跳过 key=0（从未写入）、busy 对象（计入 unknown）、dvError 对象（计入 dv_error）。
+// runVerify uses op_counter to partition objects across threads. Each goroutine
+// claims the next object atomically, so there is no duplicate work. Counters are
+// accumulated into the global verify* atomics; the summary is printed once by
+// runWrapper after all threads have finished.
 func runVerify(thread_num int, svc *s3.S3, stats *Stats) {
 	if globalKeyMap == nil {
 		log.Printf("runVerify: no key_map loaded, skipping verification")
 		stats.finish(thread_num)
+		atomic.AddInt64(&running_threads, -1)
 		return
 	}
 
-	var total, verified, pass, fail, unknown, dvErrCount int64
+	total := int64(len(globalKeyMap.data))
 
-	for objnum := int64(0); objnum < int64(len(globalKeyMap.data)); objnum++ {
+	for {
+		objnum := atomic.AddInt64(&op_counter, 1)
+		if objnum >= total {
+			atomic.AddInt64(&op_counter, -1)
+			break
+		}
+
 		b := globalKeyMap.data[objnum]
 		class := classifyKeyByte(b)
-		total++
+		atomic.AddInt64(&verifyTotal, 1)
 
 		switch class {
 		case "unwritten":
-			// 从未写入，跳过
 			continue
 		case "busy":
-			unknown++
+			atomic.AddInt64(&verifyUnknown, 1)
 			continue
 		case "dv_error":
-			dvErrCount++
+			atomic.AddInt64(&verifyDVError, 1)
 			continue
 		}
 
-		// written: 执行 GET 并验证
+		// written: GET and verify
 		key := b & 0x7F
 		bucket_num := objnum % int64(bucket_count)
 		objKey := fmt.Sprintf("%s%012d", object_prefix, objnum)
@@ -91,8 +100,7 @@ func runVerify(thread_num int, svc *s3.S3, stats *Stats) {
 		err := req.Send()
 		if err != nil {
 			log.Printf("runVerify: GET failed objnum=%d: %v", objnum, err)
-			fail++
-			verified++
+			atomic.AddInt64(&verifyFail, 1)
 			continue
 		}
 
@@ -100,20 +108,19 @@ func runVerify(thread_num int, svc *s3.S3, stats *Stats) {
 		resp.Body.Close()
 		if readErr != nil {
 			log.Printf("runVerify: read body failed objnum=%d: %v", objnum, readErr)
-			fail++
-			verified++
+			atomic.AddInt64(&verifyFail, 1)
 			continue
 		}
 
-		verified++
 		if verifyObjectData(objnum, key, data) {
-			pass++
+			atomic.AddInt64(&verifyPass, 1)
 		} else {
-			fail++
+			atomic.AddInt64(&verifyFail, 1)
 			log.Printf("%s", buildVerifyReport(objnum, buckets[bucket_num], key, data))
 		}
 	}
 
-	log.Printf("%s", buildVerifySummary(total, verified, pass, fail, unknown, dvErrCount))
 	stats.finish(thread_num)
+	atomic.AddInt64(&running_threads, -1)
 }
+
