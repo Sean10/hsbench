@@ -61,6 +61,11 @@ var verifyPass    int64
 var verifyFail    int64
 var verifyUnknown int64
 var verifyDVError int64
+var verifyUnwritten int64
+
+// verifyObjCounter is a separate object counter for 'v' mode, independent of op_counter.
+// This ensures runVerify scans from object 0 regardless of -f (first_object).
+var verifyObjCounter int64
 
 // Our HTTP transport used for the roundtripper below
 var HTTPTransport http.RoundTripper = &http.Transport{
@@ -686,7 +691,7 @@ func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
 					log.Printf("download err: %v", rerr)
 				} else {
 					// Classify the stored key for this object
-					storedByte := globalKeyMap.data[objnum]
+					storedByte := globalKeyMap.ReadKey(objnum)
 					class := classifyKeyByte(storedByte)
 					if class == "written" {
 						storedKey := storedByte & 0x7F
@@ -979,6 +984,9 @@ func runWrapper(loop int, r rune) []OutputStats {
 		atomic.StoreInt64(&verifyFail, 0)
 		atomic.StoreInt64(&verifyUnknown, 0)
 		atomic.StoreInt64(&verifyDVError, 0)
+		atomic.StoreInt64(&verifyUnwritten, 0)
+		// verifyObjCounter starts at -1 so first AddInt64(+1) yields 0
+		atomic.StoreInt64(&verifyObjCounter, -1)
 		for n := 0; n < threads; n++ {
 			svc := getS3Client()
 			go runVerify(n, svc, &stats)
@@ -999,6 +1007,7 @@ func runWrapper(loop int, r rune) []OutputStats {
 			atomic.LoadInt64(&verifyFail),
 			atomic.LoadInt64(&verifyUnknown),
 			atomic.LoadInt64(&verifyDVError),
+			atomic.LoadInt64(&verifyUnwritten),
 		))
 	}
 

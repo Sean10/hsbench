@@ -99,6 +99,17 @@ func (km *KeyMap) Sync() error {
 	return nil
 }
 
+// ReadKey returns the raw byte for objnum under the mutex.
+// Returns 0 for out-of-bounds objnum.
+func (km *KeyMap) ReadKey(objnum int64) uint8 {
+	km.mu.Lock()
+	defer km.mu.Unlock()
+	if objnum < 0 || objnum >= int64(len(km.data)) {
+		return 0
+	}
+	return km.data[objnum]
+}
+
 // HasBusy 如果任意字节的 bit7 已置位则返回 true。
 func (km *KeyMap) HasBusy() bool {
 	km.mu.Lock()

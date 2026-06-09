@@ -45,16 +45,17 @@ func classifyKeyByte(b uint8) string {
 }
 
 // buildVerifySummary 构造 v 模式完成后的汇总字符串。
-func buildVerifySummary(total, verified, pass, fail, unknown, dvErrorCount int64) string {
+func buildVerifySummary(total, verified, pass, fail, unknown, dvErrorCount, unwritten int64) string {
 	return fmt.Sprintf(
-		"VERIFY SUMMARY: total=%d verified=%d pass=%d fail=%d unknown=%d dv_error=%d",
-		total, verified, pass, fail, unknown, dvErrorCount)
+		"VERIFY SUMMARY: total=%d verified=%d pass=%d fail=%d unknown=%d dv_error=%d unwritten=%d",
+		total, verified, pass, fail, unknown, dvErrorCount, unwritten)
 }
 
-// runVerify uses op_counter to partition objects across threads. Each goroutine
-// claims the next object atomically, so there is no duplicate work. Counters are
-// accumulated into the global verify* atomics; the summary is printed once by
-// runWrapper after all threads have finished.
+// runVerify uses verifyObjCounter (independent of op_counter) to partition objects
+// across threads, always scanning from object 0 regardless of -f (first_object).
+// Each goroutine claims the next object atomically. Counters are accumulated into
+// the global verify* atomics; the summary is printed once by runWrapper after all
+// threads have finished.
 func runVerify(thread_num int, svc *s3.S3, stats *Stats) {
 	if globalKeyMap == nil {
 		log.Printf("runVerify: no key_map loaded, skipping verification")
@@ -66,18 +67,18 @@ func runVerify(thread_num int, svc *s3.S3, stats *Stats) {
 	total := int64(len(globalKeyMap.data))
 
 	for {
-		objnum := atomic.AddInt64(&op_counter, 1)
+		objnum := atomic.AddInt64(&verifyObjCounter, 1)
 		if objnum >= total {
-			atomic.AddInt64(&op_counter, -1)
 			break
 		}
 
-		b := globalKeyMap.data[objnum]
+		b := globalKeyMap.ReadKey(objnum)
 		class := classifyKeyByte(b)
 		atomic.AddInt64(&verifyTotal, 1)
 
 		switch class {
 		case "unwritten":
+			atomic.AddInt64(&verifyUnwritten, 1)
 			continue
 		case "busy":
 			atomic.AddInt64(&verifyUnknown, 1)

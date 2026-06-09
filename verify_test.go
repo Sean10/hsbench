@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -38,22 +39,11 @@ func TestRunVerify_SkipsDVError(t *testing.T) {
 // Task 7.7: verify summary report format
 func TestRunVerify_SummaryFormat(t *testing.T) {
 	// buildVerifySummary should include all counters
-	summary := buildVerifySummary(100, 80, 75, 5, 10, 5)
+	summary := buildVerifySummary(100, 80, 75, 5, 10, 5, 0)
 	checks := []string{"total=100", "verified=80", "pass=75", "fail=5", "unknown=10", "dv_error=5"}
 	for _, expected := range checks {
-		if !containsSubstr(summary, expected) {
+		if !strings.Contains(summary, expected) {
 			t.Errorf("summary missing %q, got: %s", expected, summary)
 		}
 	}
-}
-
-func containsSubstr(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && func() bool {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	}())
 }

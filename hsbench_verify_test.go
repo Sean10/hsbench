@@ -90,12 +90,15 @@ func TestBuildVerifyReport_LongData_TruncatesAt64(t *testing.T) {
 		actual[i] = byte(i)
 	}
 	report := buildVerifyReport(1, "b", 1, actual)
-	// report should reference hex of up to 64 bytes, not all 128
-	// 64 bytes = 128 hex chars; 128 bytes = 256 hex chars
-	// We just ensure it doesn't contain the 65th byte's hex (0x40 = "40")
-	// The simplest check: report length should be reasonable
-	if len(report) == 0 {
-		t.Fatal("report should not be empty")
+	// Extract hex part after the last '=' and verify it's at most 128 chars
+	// (64 bytes × 2 hex chars per byte)
+	lastEq := strings.LastIndex(report, "=")
+	if lastEq < 0 {
+		t.Fatal("report has no '=' sign")
+	}
+	hexPart := report[lastEq+1:]
+	if len(hexPart) > 128 {
+		t.Errorf("expected hex truncated to 64 bytes (128 hex chars), got %d chars", len(hexPart))
 	}
 }
 

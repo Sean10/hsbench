@@ -247,3 +247,35 @@ func TestAcquireBusy_DVError_ReturnsFalse(t *testing.T) {
 		t.Fatalf("DV_ERROR byte was modified: got 0x%02x", km.data[1])
 	}
 }
+
+// ReadKey: valid objnum returns correct value
+func TestReadKey_ValidObjnum(t *testing.T) {
+	path := t.TempDir() + "/keymap.dat"
+	km, err := NewKeyMap(path, 5)
+	if err != nil {
+		t.Fatalf("NewKeyMap failed: %v", err)
+	}
+	km.data[2] = 0x42
+
+	got := km.ReadKey(2)
+	if got != 0x42 {
+		t.Fatalf("ReadKey(2) = 0x%02x, want 0x42", got)
+	}
+}
+
+// ReadKey: out-of-bounds returns 0
+func TestReadKey_OutOfBounds(t *testing.T) {
+	path := t.TempDir() + "/keymap.dat"
+	km, err := NewKeyMap(path, 3)
+	if err != nil {
+		t.Fatalf("NewKeyMap failed: %v", err)
+	}
+
+	cases := []int64{-1, 3, 100}
+	for _, objnum := range cases {
+		got := km.ReadKey(objnum)
+		if got != 0 {
+			t.Errorf("ReadKey(%d) = 0x%02x, want 0", objnum, got)
+		}
+	}
+}
