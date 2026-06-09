@@ -6,6 +6,9 @@ import (
 	"sync"
 )
 
+// dvError 表示已确认的坏对象，不允许被重新写入。
+const dvError = uint8(0x7F)
+
 // KeyMap 持久化存储每个对象的 key 版本（1 字节/对象）。
 //
 // 字节格式：
@@ -37,7 +40,10 @@ func NewKeyMap(path string, objectCount int64) (*KeyMap, error) {
 			return nil, fmt.Errorf("failed to create keymap file %s: %w", path, err)
 		}
 	} else {
-		// 文件已存在：加载现有内容
+		// 文件已存在：校验长度后加载现有内容
+		if int64(len(existing)) != objectCount {
+			return nil, fmt.Errorf("keymap: file %s has %d entries, expected %d", path, len(existing), objectCount)
+		}
 		km.data = existing
 	}
 
@@ -51,9 +57,16 @@ func (km *KeyMap) acquireBusy(objnum int64) (oldKey uint8, ok bool) {
 	km.mu.Lock()
 	defer km.mu.Unlock()
 
+	if objnum < 0 || objnum >= int64(len(km.data)) {
+		return 0, false
+	}
 	current := km.data[objnum]
 	if current&0x80 != 0 {
 		// 已 busy
+		return 0, false
+	}
+	if current == dvError {
+		// DV_ERROR 对象不允许被重新写入
 		return 0, false
 	}
 	km.data[objnum] = current | 0x80
@@ -65,7 +78,10 @@ func (km *KeyMap) acquireBusy(objnum int64) (oldKey uint8, ok bool) {
 func (km *KeyMap) releaseBusy(objnum int64, key uint8) {
 	km.mu.Lock()
 	defer km.mu.Unlock()
-	km.data[objnum] = key
+	if objnum < 0 || objnum >= int64(len(km.data)) {
+		return
+	}
+	km.data[objnum] = key & 0x7F // 防御性掩码，确保 bit7 不被写入
 }
 
 // NextKey 返回下一个 key 值，循环：126 → 1。

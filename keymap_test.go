@@ -168,6 +168,9 @@ func TestSync_WritesDataToFile(t *testing.T) {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
 	want := []byte{0x01, 0x02, 0x03, 0x04}
+	if len(got) != len(want) {
+		t.Fatalf("file length=%d, want %d", len(got), len(want))
+	}
 	for i, b := range want {
 		if got[i] != b {
 			t.Fatalf("file[%d]=%d, want %d", i, got[i], b)
@@ -190,5 +193,57 @@ func TestHasBusy(t *testing.T) {
 	km.data[2] = 0x85
 	if !km.HasBusy() {
 		t.Fatal("expected HasBusy=true after setting busy bit")
+	}
+}
+
+// Fix 1: acquireBusy 对越界 objnum 返回 (0, false)
+func TestAcquireBusy_OutOfBounds_ReturnsFalse(t *testing.T) {
+	path := t.TempDir() + "/keymap.dat"
+	km, err := NewKeyMap(path, 3)
+	if err != nil {
+		t.Fatalf("NewKeyMap failed: %v", err)
+	}
+
+	cases := []int64{-1, 3, 100}
+	for _, objnum := range cases {
+		_, ok := km.acquireBusy(objnum)
+		if ok {
+			t.Errorf("acquireBusy(%d) expected false, got true", objnum)
+		}
+	}
+}
+
+// Fix 2: NewKeyMap 加载长度不匹配的文件时返回错误
+func TestNewKeyMap_LengthMismatch_ReturnsError(t *testing.T) {
+	path := t.TempDir() + "/keymap.dat"
+
+	// 写入 3 字节，但 objectCount 要求 5
+	if err := os.WriteFile(path, []byte{0x01, 0x02, 0x03}, 0644); err != nil {
+		t.Fatalf("setup WriteFile failed: %v", err)
+	}
+
+	_, err := NewKeyMap(path, 5)
+	if err == nil {
+		t.Fatal("expected error on length mismatch, got nil")
+	}
+}
+
+// Fix 3: acquireBusy 对 DV_ERROR (0x7F) 返回 (0, false)
+func TestAcquireBusy_DVError_ReturnsFalse(t *testing.T) {
+	path := t.TempDir() + "/keymap.dat"
+	km, err := NewKeyMap(path, 3)
+	if err != nil {
+		t.Fatalf("NewKeyMap failed: %v", err)
+	}
+
+	km.data[1] = 0x7F // DV_ERROR
+
+	_, ok := km.acquireBusy(1)
+	if ok {
+		t.Fatal("expected acquireBusy to return false for DV_ERROR object")
+	}
+	// 确保数据未被修改
+	if km.data[1] != 0x7F {
+		t.Fatalf("DV_ERROR byte was modified: got 0x%02x", km.data[1])
 	}
 }
