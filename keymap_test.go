@@ -102,7 +102,7 @@ func TestReleaseBusy_SuccessWritesNewKey(t *testing.T) {
 	}
 
 	km.data[2] = 0x85 // busy 状态
-	km.releaseBusy(2, 0x06, true)
+	km.releaseBusy(2, 0x06) // 成功：调用方传入新 key
 
 	if km.data[2] != 0x06 {
 		t.Fatalf("expected data[2]=0x06, got 0x%02x", km.data[2])
@@ -118,7 +118,7 @@ func TestReleaseBusy_FailureRestoresOldKey(t *testing.T) {
 	}
 
 	km.data[0] = 0x83 // busy with old_key=3
-	km.releaseBusy(0, 0x03, false)
+	km.releaseBusy(0, 0x03) // 失败：调用方传入旧 key 恢复
 
 	if km.data[0] != 0x03 {
 		t.Fatalf("expected data[0]=0x03 (restored), got 0x%02x", km.data[0])

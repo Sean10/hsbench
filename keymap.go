@@ -60,16 +60,12 @@ func (km *KeyMap) acquireBusy(objnum int64) (oldKey uint8, ok bool) {
 	return current & 0x7F, true
 }
 
-// releaseBusy 释放对象的 busy 状态。
-// 如果 success=true，写入 newKey（清除 bit7）。
-// 如果 success=false，恢复 oldKey（调用方负责传入 acquireBusy 返回的旧值）。
-func (km *KeyMap) releaseBusy(objnum int64, newKey uint8, success bool) {
+// releaseBusy 释放对象的 busy 状态，将 key 写回 data[objnum]。
+// 调用方负责决定传入新 key（成功时）还是旧 key（失败时恢复）。
+func (km *KeyMap) releaseBusy(objnum int64, key uint8) {
 	km.mu.Lock()
 	defer km.mu.Unlock()
-
-	// success=true: newKey 为新 key 值；success=false: newKey 为待恢复的 oldKey
-	// 两种情况调用方均传入目标值，直接写入即可
-	km.data[objnum] = newKey
+	km.data[objnum] = key
 }
 
 // NextKey 返回下一个 key 值，循环：126 → 1。
@@ -79,6 +75,8 @@ func NextKey(oldKey uint8) uint8 {
 
 // Sync 将内存数据写回文件。
 func (km *KeyMap) Sync() error {
+	km.mu.Lock()
+	defer km.mu.Unlock()
 	if err := os.WriteFile(km.path, km.data, 0644); err != nil {
 		return fmt.Errorf("failed to sync keymap to %s: %w", km.path, err)
 	}
