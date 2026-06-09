@@ -329,14 +329,14 @@ type Stats struct {
 	// Per-thread statistics
 	threadStats []ThreadStats
 	// a map of per-interval thread completion counters
-	intervalCompletions sync.Map
+	intervalCompletions *sync.Map
 	// a counter of how many threads have finished updating stats entirely
 	completions int32
 }
 
 func makeStats(loop int, mode string, threads int, intervalNano int64) Stats {
 	start := time.Now().UnixNano()
-	s := Stats{threads, loop, mode, start, 0, intervalNano, []ThreadStats{}, sync.Map{}, 0}
+	s := Stats{threads, loop, mode, start, 0, intervalNano, []ThreadStats{}, &sync.Map{}, 0}
 	for i := 0; i < threads; i++ {
 		s.threadStats = append(s.threadStats, makeThreadStats(start, s.loop, s.mode, s.intervalNano))
 		s.updateIntervals(i)
@@ -506,7 +506,7 @@ func runUpload(thread_num int, fendtime time.Time, stats *Stats) {
 			errcnt++
 			stats.addSlowDown(thread_num)
 			atomic.AddInt64(&op_counter, -1)
-			log.Printf("upload err", err)
+			log.Printf("upload err: %v", err)
 		} else {
 			// Update the stats
 			stats.addOp(thread_num, object_size, end-start)
@@ -572,7 +572,7 @@ func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
 		if err != nil {
 			errcnt++
 			stats.addSlowDown(thread_num)
-			log.Printf("download err", err)
+			log.Printf("download err: %v", err)
 		} else {
 			var bytesRead int64 = 0
 			bytesRead, err := readBody(resp.Body)
@@ -582,7 +582,7 @@ func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
 			if err != nil {
 				errcnt++
 				stats.addSlowDown(thread_num)
-				log.Printf("download err", err)
+				log.Printf("download err: %v", err)
 			}
 		}
 		if errcnt > 2 {
@@ -626,7 +626,7 @@ func runDelete(thread_num int, stats *Stats) {
 		if err != nil {
 			errcnt++
 			stats.addSlowDown(thread_num)
-			log.Printf("delete err", err, "out", out.String())
+			log.Printf("delete err: %v out=%s", err, out.String())
 		} else {
 			// Update the stats
 			stats.addOp(thread_num, object_size, end-start)
@@ -877,6 +877,10 @@ func runWrapper(loop int, r rune) []OutputStats {
 }
 
 func init() {
+	// Skip CLI parsing when running under `go test`
+	if len(os.Args) > 0 && (strings.HasSuffix(os.Args[0], ".test") || strings.Contains(os.Args[0], "/_test/")) {
+		return
+	}
 	// Parse command line
 	myflag := flag.NewFlagSet("myflag", flag.ExitOnError)
 	myflag.StringVar(&access_key, "a", os.Getenv("AWS_ACCESS_KEY_ID"), "Access key")
