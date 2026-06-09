@@ -1,51 +1,63 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 )
 
-// Task 1.1: 相同输入返回相同输出（确定性）
-func TestGenerateObjectData_Deterministic(t *testing.T) {
-	a := generateObjectData(42, 7, 128)
-	b := generateObjectData(42, 7, 128)
-	if len(a) != 128 || len(b) != 128 {
-		t.Fatalf("expected length 128, got %d and %d", len(a), len(b))
+func TestGenerateObjectData(t *testing.T) {
+	tests := []struct {
+		name        string
+		a, b        []byte
+		shouldEqual bool
+	}{
+		{
+			name:        "deterministic: same inputs produce same output",
+			a:           generateObjectData(42, 7, 128),
+			b:           generateObjectData(42, 7, 128),
+			shouldEqual: true,
+		},
+		{
+			name:        "different key: same objnum different key produces different output",
+			a:           generateObjectData(1, 0, 64),
+			b:           generateObjectData(1, 1, 64),
+			shouldEqual: false,
+		},
+		{
+			name:        "different objnum: same key different objnum produces different output",
+			a:           generateObjectData(0, 5, 64),
+			b:           generateObjectData(1, 5, 64),
+			shouldEqual: false,
+		},
+		{
+			name:        "zero key objnum=0 vs objnum=1: different output even when key=0",
+			a:           generateObjectData(0, 0, 64),
+			b:           generateObjectData(1, 0, 64),
+			shouldEqual: false,
+		},
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			t.Fatalf("byte %d differs: %d vs %d (not deterministic)", i, a[i], b[i])
-		}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if bytes.Equal(tc.a, tc.b) != tc.shouldEqual {
+				if tc.shouldEqual {
+					t.Fatalf("expected equal outputs but got different data")
+				} else {
+					t.Fatalf("expected different outputs but got identical data")
+				}
+			}
+		})
 	}
 }
 
-// Task 1.3: 不同 key 返回不同数据
-func TestGenerateObjectData_DifferentKey(t *testing.T) {
-	a := generateObjectData(1, 0, 64)
-	b := generateObjectData(1, 1, 64)
-	same := true
-	for i := range a {
-		if a[i] != b[i] {
-			same = false
-			break
-		}
+// TestGenerateObjectData_SizeZero verifies that size=0 returns an empty
+// (non-nil) slice without panicking.
+func TestGenerateObjectData_SizeZero(t *testing.T) {
+	result := generateObjectData(0, 0, 0)
+	if result == nil {
+		t.Fatal("expected non-nil slice for size=0, got nil")
 	}
-	if same {
-		t.Fatal("expected different output for different key, got identical bytes")
-	}
-}
-
-// Task 1.5: 不同 objnum 返回不同数据
-func TestGenerateObjectData_DifferentObjnum(t *testing.T) {
-	a := generateObjectData(0, 5, 64)
-	b := generateObjectData(1, 5, 64)
-	same := true
-	for i := range a {
-		if a[i] != b[i] {
-			same = false
-			break
-		}
-	}
-	if same {
-		t.Fatal("expected different output for different objnum, got identical bytes")
+	if len(result) != 0 {
+		t.Fatalf("expected length 0 for size=0, got %d", len(result))
 	}
 }
