@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -72,6 +73,9 @@ func (j *Journal) Close() error {
 func (j *Journal) write(objnum int64, oldKey, newKey, phase uint8) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.file == nil {
+		return fmt.Errorf("journal: write on closed journal")
+	}
 
 	var buf [recordSize]byte
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(objnum))
@@ -91,9 +95,15 @@ func (j *Journal) write(objnum int64, oldKey, newKey, phase uint8) error {
 // 根据 phase 将 KeyMap 中的 busy 对象恢复到正确状态，
 // 然后截断 journal 文件（恢复完成，重新开始）。
 func Recover(km *KeyMap, jnlPath string) error {
+	if jnlPath == "" {
+		return nil
+	}
 	data, err := os.ReadFile(jnlPath)
 	if err != nil {
-		return fmt.Errorf("failed to read journal %s: %w", jnlPath, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // normal: first startup, no journal yet
+		}
+		return fmt.Errorf("journal: read %s: %w", jnlPath, err)
 	}
 
 	// 解析所有记录，按 objnum 保留最后一条

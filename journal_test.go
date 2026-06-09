@@ -14,7 +14,6 @@ func TestWriteJournal_Before_AppendsRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJournal failed: %v", err)
 	}
-	defer j.Close()
 
 	if err := j.WriteBefore(42, 3, 4); err != nil {
 		t.Fatalf("WriteBefore failed: %v", err)
@@ -57,7 +56,6 @@ func TestWriteJournal_After_AppendsRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJournal failed: %v", err)
 	}
-	defer j.Close()
 
 	if err := j.WriteAfter(7, 1, 2); err != nil {
 		t.Fatalf("WriteAfter failed: %v", err)
